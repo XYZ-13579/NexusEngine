@@ -14,6 +14,11 @@ let dragStart = null;
 let dragEnd = null;
 
 let hoveredEdge = null; // { i, j, idx }
+let editorZoom = 30; // pixels per cell
+let editorOffsetX = 20;
+let editorOffsetY = 20;
+let isPanning = false;
+let lastMousePos = { x: 0, y: 0 };
 
 function initEditor() {
     // Sync UI with current globals
@@ -38,8 +43,18 @@ function initEditor() {
         customMapData.height = rows;
     }
     
-    drawEditor();
+    resetView();
     if (historyIndex === -1) saveHistory();
+}
+
+function resetView() {
+    const padding = 40;
+    const availableW = editorCanvas.width - padding * 2;
+    const availableH = editorCanvas.height - padding * 2;
+    editorZoom = Math.min(availableW / cols, availableH / rows);
+    editorOffsetX = (editorCanvas.width - cols * editorZoom) / 2;
+    editorOffsetY = (editorCanvas.height - rows * editorZoom) / 2;
+    drawEditor();
 }
 
 function updateGridDimensions() {
@@ -140,12 +155,19 @@ function applyState(state) {
 }
 
 function drawEditor() {
-    const cellSize = editorCanvas.width / Math.max(cols, rows);
+    const cellSize = editorZoom;
     ectx.clearRect(0, 0, editorCanvas.width, editorCanvas.height);
+
+    ectx.save();
+    ectx.translate(editorOffsetX, editorOffsetY);
+
+    // Draw Grid Background (Outer boundary)
+    ectx.fillStyle = '#050505';
+    ectx.fillRect(0, 0, cols * cellSize, rows * cellSize);
 
     // Draw Grid Cells
     ectx.beginPath();
-    ectx.strokeStyle = '#111';
+    ectx.strokeStyle = '#222';
     ectx.lineWidth = 1;
     for (let j = 0; j <= rows; j++) {
         ectx.moveTo(0, j * cellSize);
@@ -179,6 +201,12 @@ function drawEditor() {
 
     // Draw Walls
     for (const cell of editGrid) {
+        // Simple Culling
+        const x = cell.i * cellSize;
+        const y = cell.j * cellSize;
+        if (x + cellSize + editorOffsetX < 0 || x + editorOffsetX > editorCanvas.width ||
+            y + cellSize + editorOffsetY < 0 || y + editorOffsetY > editorCanvas.height) continue;
+            
         drawCellWalls(cell, cellSize);
     }
 
@@ -220,6 +248,8 @@ function drawEditor() {
         ectx.fillStyle = bg;
         ectx.fillRect(i1 * cellSize, j1 * cellSize, (i2 - i1 + 1) * cellSize, (j2 - j1 + 1) * cellSize);
     }
+
+    ectx.restore();
 }
 
 function drawCellWalls(cell, cellSize) {
@@ -253,16 +283,28 @@ editorCanvas.addEventListener('mousedown', (e) => {
     const rect = editorCanvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    const cellSize = editorCanvas.width / Math.max(cols, rows);
-    const i = Math.floor(mx / cellSize);
-    const j = Math.floor(my / cellSize);
+    
+    if (e.button === 2 || e.button === 1) { // Right or Middle click
+        isPanning = true;
+        lastMousePos = { x: e.clientX, y: e.clientY };
+        return;
+    }
+
+    const cellSize = editorZoom;
+    const gx = (mx - editorOffsetX) / cellSize;
+    const gy = (my - editorOffsetY) / cellSize;
+    const i = Math.floor(gx);
+    const j = Math.floor(gy);
+    
     if (i < 0 || i >= cols || j < 0 || j >= rows) return;
 
     if (['room', 'maze'].includes(editorTool)) {
         dragStart = { i, j };
         dragEnd = { i, j };
     } else {
-        applyTool(i, j, mx % cellSize, my % cellSize, cellSize);
+        const relX = (gx % 1) * cellSize;
+        const relY = (gy % 1) * cellSize;
+        applyTool(i, j, relX, relY, cellSize);
     }
 });
 
@@ -270,21 +312,34 @@ editorCanvas.addEventListener('mousemove', (e) => {
     const rect = editorCanvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left);
     const my = (e.clientY - rect.top);
-    const cellSize = editorCanvas.width / Math.max(cols, rows);
+    
+    if (isPanning) {
+        const dx = e.clientX - lastMousePos.x;
+        const dy = e.clientY - lastMousePos.y;
+        editorOffsetX += dx;
+        editorOffsetY += dy;
+        lastMousePos = { x: e.clientX, y: e.clientY };
+        drawEditor();
+        return;
+    }
+
+    const cellSize = editorZoom;
+    const gx = (mx - editorOffsetX) / cellSize;
+    const gy = (my - editorOffsetY) / cellSize;
     
     if (dragStart) {
-        const ni = Math.max(0, Math.min(cols - 1, Math.floor(mx / cellSize)));
-        const nj = Math.max(0, Math.min(rows - 1, Math.floor(my / cellSize)));
+        const ni = Math.max(0, Math.min(cols - 1, Math.floor(gx)));
+        const nj = Math.max(0, Math.min(rows - 1, Math.floor(gy)));
         if (ni !== dragEnd.i || nj !== dragEnd.j) {
             dragEnd = { i: ni, j: nj };
             drawEditor();
         }
     } else {
-        const i = Math.floor(mx / cellSize);
-        const j = Math.floor(my / cellSize);
+        const i = Math.floor(gx);
+        const j = Math.floor(gy);
         if (i >= 0 && i < cols && j >= 0 && j < rows) {
-            const relX = mx % cellSize;
-            const relY = my % cellSize;
+            const relX = (gx % 1) * cellSize;
+            const relY = (gy % 1) * cellSize;
             
             // Calculate closest edge
             const dists = [relY, cellSize - relX, cellSize - relY, relX];
@@ -306,7 +361,42 @@ editorCanvas.addEventListener('mousemove', (e) => {
     }
 });
 
+editorCanvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = editorCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Grid position before zoom
+    const cellSize = editorZoom;
+    const gx = (mx - editorOffsetX) / cellSize;
+    const gy = (my - editorOffsetY) / cellSize;
+
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    editorZoom *= delta;
+    
+    // Bounds check for zoom
+    if (editorZoom < 10) editorZoom = 10;
+    if (editorZoom > 300) editorZoom = 300;
+
+    // Offset update to keep gx, gy at the same mx, my
+    editorOffsetX = mx - gx * editorZoom;
+    editorOffsetY = my - gy * editorZoom;
+
+    drawEditor();
+}, { passive: false });
+
+editorCanvas.addEventListener('dblclick', () => {
+    resetView();
+});
+
+editorCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
 window.addEventListener('mouseup', () => {
+    if (isPanning) {
+        isPanning = false;
+        return;
+    }
     if (dragStart) {
         if (editorTool === 'room') applyRoom(dragStart, dragEnd);
         if (editorTool === 'maze') applyMaze(dragStart, dragEnd);
