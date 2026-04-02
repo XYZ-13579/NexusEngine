@@ -39,7 +39,7 @@ function updateTexture(key, material) {
 const textureLoader = new THREE.TextureLoader();
 
 // Materials & Mesh Groups
-const wallTex = textureLoader.load('textures/wall.png');
+const wallTex = textureLoader.load('wall.png');
 wallTex.wrapS = THREE.RepeatWrapping;
 wallTex.wrapT = THREE.RepeatWrapping;
 const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, color: 0xaaaaaa, roughness: 0.8, metalness: 0.2 });
@@ -60,7 +60,7 @@ const goalMat = new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00
 const textureScaleFactor = 2.0; // Texture repeats per cell width 'w'
 
 // Floor & Ceiling
-const floorTex = textureLoader.load('textures/floor.png');
+const floorTex = textureLoader.load('floor.png');
 floorTex.wrapS = THREE.RepeatWrapping;
 floorTex.wrapT = THREE.RepeatWrapping;
 floorTex.repeat.set(cols * textureScaleFactor, rows * textureScaleFactor);
