@@ -88,7 +88,7 @@ function retryGame() {
 }
 
 function createBloodEffect(pos) {
-    const particleCount = 120;
+    const particleCount = 20;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const velocities = [];
