@@ -27,6 +27,7 @@ function initEditor() {
     document.getElementById('editor-enemy-size').value = enemySize;
     document.getElementById('editor-enemy-health').value = defaultEnemyHealth;
     document.getElementById('env-enemy-pass-doors').checked = envParams.enemyCanPassDoors;
+    document.getElementById('env-enemy-ai-mode').value = envParams.enemyAiMode;
 
     // Use current grid if it exists and matches dimensions
     if (customMapData.cells && customMapData.cells.length === cols * rows) {
@@ -471,6 +472,12 @@ function setSingleWall(i, j, wallIdx, type) {
 function applyTool(i, j, relX, relY, cellSize) {
     let changed = false;
     if (['wall', 'door', 'window', 'eraser'].includes(editorTool)) {
+        if (editorTool === 'eraser') {
+            // Also erase any creature on this cell
+            const creatureBefore = customMapData.creatures.length;
+            customMapData.creatures = customMapData.creatures.filter(en => !(en.i === i && en.j === j));
+            if (customMapData.creatures.length !== creatureBefore) changed = true;
+        }
         if (hoveredEdge) {
             const typeMap = { wall: 1, door: 2, window: 3, eraser: 0 };
             toggleWall(hoveredEdge.i, hoveredEdge.j, hoveredEdge.idx, typeMap[editorTool]);
@@ -504,6 +511,17 @@ document.getElementById('editor-clear').onclick = () => { editGrid.forEach(c => 
 
 document.getElementById('env-enemy-pass-doors').addEventListener('change', (e) => {
     envParams.enemyCanPassDoors = e.target.checked;
+});
+
+document.getElementById('env-enemy-ai-mode').addEventListener('change', (e) => {
+    envParams.enemyAiMode = e.target.value;
+    // Notify enemies to update their state if necessary
+    enemies.forEach(en => {
+        if (en.state === 'WANDER' || en.state === 'IDLE') {
+            en.state = envParams.enemyAiMode === 'idle' ? 'IDLE' : 'WANDER';
+            if (en.state === 'IDLE') en.path = [];
+        }
+    });
 });
 
 document.getElementById('asset-floor').onchange = (e) => loadTex(e, 'floor');
