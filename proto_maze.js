@@ -42,8 +42,8 @@ function Cell(i, j) {
             ctx.fillRect(x, y, w, w);
         }
 
-        if (this.passed) {
-            ctx.fillStyle = 'blue';
+        if (this.passed && footprintsVisible) {
+            ctx.fillStyle = footprintColor;
             ctx.fillRect(x, y, w, w);
             if (!this.pathMesh) {
                 this.pathMesh = new THREE.Mesh(pathGeo, pathMat);
@@ -74,6 +74,51 @@ function Cell(i, j) {
         const thickness = 2;
         const cx = getPosX(this.i);
         const cz = getPosZ(this.j);
+
+        if (type === 2 && typeof doorModel !== 'undefined' && doorModel) {
+            const mesh = THREE.SkeletonUtils.clone(doorModel);
+            const box = new THREE.Box3().setFromObject(mesh);
+            const size = box.getSize(new THREE.Vector3());
+            const scale = Math.min(w / (size.x || 1), height / (size.y || 1));
+            mesh.scale.setScalar(scale);
+
+            // align bottom
+            const bottomY = box.min.y * scale;
+            const yPos = -bottomY;
+            const dw = size.x * scale;
+            const dh = size.y * scale;
+
+            if (idx === 0) { mesh.position.set(cx, yPos, cz - w / 2); mesh.rotation.y = 0; }
+            if (idx === 1) { mesh.position.set(cx + w / 2, yPos, cz); mesh.rotation.y = -Math.PI / 2; }
+            if (idx === 2) { mesh.position.set(cx, yPos, cz + w / 2); mesh.rotation.y = Math.PI; }
+            if (idx === 3) { mesh.position.set(cx - w / 2, yPos, cz); mesh.rotation.y = Math.PI / 2; }
+            
+            wallGroup.add(mesh);
+            mesh.userData = { isWall: true, isDoor: true };
+
+            const lw = (w - dw) / 2;
+            const th = height - dh;
+            const isHoriz = (idx === 0 || idx === 2);
+            const dcz = (idx === 0) ? cz - w/2 : cz + w/2;
+            const dcx = (idx === 3) ? cx - w/2 : cx + w/2;
+
+            if (isHoriz) {
+                if (lw > 0.01) {
+                    this.wallMeshes[idx].push(mkWall(lw, height, thickness, cx - w/2 + lw/2, dcz));
+                    this.wallMeshes[idx].push(mkWall(lw, height, thickness, cx + w/2 - lw/2, dcz));
+                }
+                if (th > 0.01) this.wallMeshes[idx].push(mkWall(dw, th, thickness, cx, dcz, dh + th/2));
+            } else {
+                if (lw > 0.01) {
+                    this.wallMeshes[idx].push(mkWall(thickness, height, lw, dcx, cz - w/2 + lw/2));
+                    this.wallMeshes[idx].push(mkWall(thickness, height, lw, dcx, cz + w/2 - lw/2));
+                }
+                if (th > 0.01) this.wallMeshes[idx].push(mkWall(thickness, th, dw, dcx, cz, dh + th/2));
+            }
+
+            return mesh;
+        }
+
         let mesh;
         if (idx === 0) mesh = mkWall(w + thickness, height, thickness, cx, cz - w / 2);
         if (idx === 1) mesh = mkWall(thickness, height, w + thickness, cx + w / 2, cz);
@@ -89,34 +134,58 @@ function Cell(i, j) {
         const cx = getPosX(this.i);
         const cz = getPosZ(this.j);
 
+        const winW = w * 0.5;
+        const winH = height * 0.5;
+        const yCenter = height / 2;
+        
         const configs = [
-            { x: cx, z: cz - w / 2 }, // top 
-            { x: cx + w / 2, z: cz }, // right
-            { x: cx, z: cz + w / 2 }, // bottom
-            { x: cx - w / 2, z: cz }  // left
+            { x: cx, z: cz - w / 2, r: 0 },
+            { x: cx + w / 2, z: cz, r: -Math.PI/2 },
+            { x: cx, z: cz + w / 2, r: Math.PI },
+            { x: cx - w / 2, z: cz, r: Math.PI/2 }
         ];
-
         const pos = configs[idx];
         const isHoriz = (idx === 0 || idx === 2);
-        const winW = isHoriz ? w : thickness;
-        const winD = isHoriz ? thickness : w;
 
-        // 4 Segments: left, right, bottom (sill), top (header)
-        const frameMat = wallMat;
-        const gapSize = 0.5; // 50% hole
+        let actualW = winW;
+        let actualH = winH;
+
+        if (typeof windowModel !== 'undefined' && windowModel) {
+            const mesh = THREE.SkeletonUtils.clone(windowModel);
+            const box = new THREE.Box3().setFromObject(mesh);
+            const size = box.getSize(new THREE.Vector3());
+            const scale = Math.min(winW / (size.x || 1), winH / (size.y || 1));
+            mesh.scale.setScalar(scale);
+
+            actualW = size.x * scale;
+            actualH = size.y * scale;
+
+            const modelCenterY = box.getCenter(new THREE.Vector3()).y * scale;
+            const yPos = yCenter - modelCenterY;
+
+            mesh.position.set(pos.x, yPos, pos.z);
+            mesh.rotation.y = pos.r;
+
+            wallGroup.add(mesh);
+            mesh.userData = { isWall: true };
+            this.wallMeshes[idx].push(mesh);
+        }
+
+        const lw = (w - actualW) / 2;
+        const rw = (w - actualW) / 2;
+        const botH = yCenter - (actualH / 2);
+        const topH = height - (yCenter + actualH / 2);
 
         if (isHoriz) {
-            // Horizontal wall (X-axis)
-            this.wallMeshes[idx].push(mkWall(winW * (1 - gapSize) / 2, height, thickness, pos.x - winW * (1 + gapSize) / 4, pos.z)); // left
-            this.wallMeshes[idx].push(mkWall(winW * (1 - gapSize) / 2, height, thickness, pos.x + winW * (1 + gapSize) / 4, pos.z)); // right
-            this.wallMeshes[idx].push(mkWall(winW * gapSize, height * (1 - gapSize) / 2, thickness, pos.x, pos.z, height * (1 - gapSize) / 4)); // sill (bottom)
-            this.wallMeshes[idx].push(mkWall(winW * gapSize, height * (1 - gapSize) / 2, thickness, pos.x, pos.z, height * (1 + gapSize) / 4)); // header (top)
+            this.wallMeshes[idx].push(mkWall(lw, height, thickness, pos.x - w/2 + lw/2, pos.z));
+            this.wallMeshes[idx].push(mkWall(rw, height, thickness, pos.x + w/2 - rw/2, pos.z));
+            this.wallMeshes[idx].push(mkWall(actualW, botH, thickness, pos.x, pos.z, botH/2));
+            this.wallMeshes[idx].push(mkWall(actualW, topH, thickness, pos.x, pos.z, height - topH/2));
         } else {
-            // Vertical wall (Z-axis)
-            this.wallMeshes[idx].push(mkWall(thickness, height, winD * (1 - gapSize) / 2, pos.x, pos.z - winD * (1 + gapSize) / 4)); // back
-            this.wallMeshes[idx].push(mkWall(thickness, height, winD * (1 - gapSize) / 2, pos.x, pos.z + winD * (1 + gapSize) / 4)); // front
-            this.wallMeshes[idx].push(mkWall(thickness, height * (1 - gapSize) / 2, winD * gapSize, pos.x, pos.z, height * (1 - gapSize) / 4)); // sill
-            this.wallMeshes[idx].push(mkWall(thickness, height * (1 - gapSize) / 2, winD * gapSize, pos.x, pos.z, height * (1 + gapSize) / 4)); // header
+            this.wallMeshes[idx].push(mkWall(thickness, height, lw, pos.x, pos.z - w/2 + lw/2));
+            this.wallMeshes[idx].push(mkWall(thickness, height, rw, pos.x, pos.z + w/2 - rw/2));
+            this.wallMeshes[idx].push(mkWall(thickness, botH, actualW, pos.x, pos.z, botH/2));
+            this.wallMeshes[idx].push(mkWall(thickness, topH, actualW, pos.x, pos.z, height - topH/2));
         }
     };
 
@@ -124,7 +193,17 @@ function Cell(i, j) {
         this.wallMeshes.forEach((mArr, idx) => {
             if (Array.isArray(mArr)) {
                 mArr.forEach(m => {
-                    if (m.geometry) m.geometry.dispose();
+                    if (m && m.traverse) {
+                        m.traverse(child => {
+                            if (child.isMesh) {
+                                if (child.geometry) child.geometry.dispose();
+                                if (Array.isArray(child.material)) child.material.forEach(mat => mat.dispose());
+                                else if (child.material) child.material.dispose();
+                            }
+                        });
+                    } else if (m && m.geometry) {
+                        m.geometry.dispose();
+                    }
                     wallGroup.remove(m);
                 });
                 this.wallMeshes[idx] = [];
@@ -145,6 +224,26 @@ function generateMaze() {
         wallGroup.remove(c);
     }
     while (pathGroup.children.length > 0) pathGroup.remove(pathGroup.children[0]);
+    while (propsGroup.children.length > 0) {
+        const c = propsGroup.children[0];
+        if (c.geometry) c.geometry.dispose();
+        if (c.traverse) c.traverse(child => { if (child.isMesh && child.geometry) child.geometry.dispose(); });
+        propsGroup.remove(c);
+    }
+    // Rebuild Rapier physics world from scratch to clear all stale static colliders
+    // (walls, pillars) as well as dynamic bodies from previous map generation.
+    dynamicBodies = [];
+    if (physicsWorld && typeof RAPIER !== 'undefined') {
+        physicsWorld.free();
+        physicsWorld = new RAPIER.World({ x: 0, y: -20, z: 0 });
+
+        // Re-add the static ground floor collider
+        const floorCol = RAPIER.ColliderDesc.cuboid(500, 0.05, 500)
+            .setTranslation(0, -0.05, 0)
+            .setRestitution(0.0)
+            .setFriction(0.8);
+        physicsWorld.createCollider(floorCol);
+    }
     if (goalMesh) { scene.remove(goalMesh); goalMesh = null; }
 
     // Init texture/params from editor potentially
@@ -152,6 +251,7 @@ function generateMaze() {
     updateTexture('wall', wallMat);
     updateTexture('floor', floorMat);
     updateTexture('ceil', ceilMat);
+    updateTexture('pillar', pillarMat);
 
     if (mapMode === 'custom') {
         applyCustomMap();
@@ -251,6 +351,22 @@ function setupWorldAssets() {
     cam.rotation.set(0, 0, 0);
 
     spawnEnemies();
+
+    if (customMapData.props) {
+        customMapData.props.forEach(p => {
+            const px = getPosX(p.i);
+            const pz = getPosZ(p.j);
+            if (p.type === 'light') mkLightProp(px, w * 0.8, pz);
+            else if (p.type === 'pillar') mkPillarProp(px, 0, pz, w * 0.25, w * 0.8);
+            else if (p.type === 'stair') mkStairProp(px, 0, pz);
+            else if (p.type === 'cube') mkCubeProp(px, 0, pz);
+            else if (p.type === 'ball') mkBallProp(px, 0, pz);
+            else if (p.type.startsWith('custom_')) {
+                const url = customPropModels[p.type];
+                if (url) mkCustomGLBProp(px, 0, pz, url);
+            }
+        });
+    }
 }
 
 function removeWalls(a, b) {
