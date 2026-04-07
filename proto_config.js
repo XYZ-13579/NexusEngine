@@ -27,15 +27,23 @@ let customMapData = {
     height: 10,
     spawn: { i: 0, j: 0 },
     goal: { i: 9, j: 9 },
-    creatures: [] // Array of {i, j}
+    creatures: [], // Array of {i, j}
+    props: [] // Array of {type, i, j}
 };
 
 // Custom Asset URLs (Blob URLs or Defaults)
 let customTextures = {
     wall: 'textures/wall.png',
     floor: 'textures/floor.png',
-    ceil: '天井.jpeg'
+    ceil: '天井.jpeg',
+    pillar: 'textures/wall.png'
 };
+
+// Custom GLB prop models registry: { 'custom_0': blobURL, ... }
+let customPropModels = {};
+
+// Custom Image Creature configs: { 'cc_0': { name, img: blobURL, idle: blobURL, hit: blobURL, die: blobURL } }
+let customCreatureConfigs = {};
 
 // Environmental Parameters
 let envParams = {
@@ -43,10 +51,15 @@ let envParams = {
     ambientIntensity: 1.1,
     dirIntensity: 0.5,
     fogColor: 0x222222,
-    enemyCanPassDoors: false
+    enemyCanPassDoors: false,
+    enemyAiMode: 'wander'
 };
 
-let creatureModelPath = 'creature_1.glb';
+let creatureModelPath = 'model_walking.glb';
+
+let minimapVisible = false;
+let footprintsVisible = false;
+let footprintColor = '#0000ff'; // Default Blue
 // ... (rest of the file)
 
 let enemyCount = 10;
@@ -68,3 +81,8 @@ let enemyAnimations = [];
 let lastLoadedCreaturePath = null;
 const gltfLoader = new THREE.GLTFLoader();
 const raycaster = new THREE.Raycaster();
+
+let doorModel = null;
+let windowModel = null;
+gltfLoader.load('door.glb', gltf => { doorModel = gltf.scene; console.log("Loaded door.glb"); }, undefined, err => console.warn("door.glb error", err));
+gltfLoader.load('window.glb', gltf => { windowModel = gltf.scene; console.log("Loaded window.glb"); }, undefined, err => console.warn("window.glb error", err));
