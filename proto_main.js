@@ -99,6 +99,34 @@ function gameLoop() {
                     camera.position.z = oldZ;
                 }
             }
+
+            // Prop climbing logic (stairs, cubes)
+            const downRay = new THREE.Raycaster();
+            downRay.set(new THREE.Vector3(camera.position.x, w * 0.8, camera.position.z), new THREE.Vector3(0, -1, 0));
+
+            // propsGroup might not be defined globally in some scopes, but we can access it from scene if it is global
+            // In proto_engine.js we did `const propsGroup = new THREE.Group();` but we should ensure it's globally accessible.
+            // Oh wait, `propsGroup` is defined using `const` in `proto_engine.js`. It isn't global if it's within a module, but `proto_engine.js` is included via a normal `<script>` tag, so `const` is block scoped to the script but wait, top-level `const` in non-module scripts are in the global scope? No, they are globally accessible but not properties of window. Regardless, it's globally visible to `proto_main.js`.
+            if (typeof propsGroup !== 'undefined') {
+                const hitProps = downRay.intersectObjects(propsGroup.children, true);
+                let targetGround = 0;
+                const validHit = hitProps.find(h => {
+                    let obj = h.object;
+                    while (obj) {
+                        if (obj.userData && (obj.userData.isStair || obj.userData.isProp)) return true;
+                        obj = obj.parent;
+                    }
+                    return false;
+                });
+
+                if (validHit) {
+                    targetGround = validHit.point.y;
+                }
+                const targetY = targetGround + w * 0.4 + cameraHeightOffset;
+                camera.position.y += (targetY - camera.position.y) * 15 * delta;
+            } else {
+                camera.position.y = w * 0.4 + cameraHeightOffset;
+            }
         }
 
         player.i = Math.floor((camera.position.x + cols * w / 2) / w);
@@ -108,6 +136,33 @@ function gameLoop() {
         if (currentCell && !currentCell.passed) currentCell.passed = true;
 
         if (player.i !== prevPlayer.i || player.j !== prevPlayer.j) {
+            const dx = player.i - prevPlayer.i;
+            const dz = player.j - prevPlayer.j;
+            const pCell = grid[index(prevPlayer.i, prevPlayer.j)];
+            let passedDoor = false;
+
+            if (pCell) {
+                if (dz === -1 && pCell.walls[0] === 2) passedDoor = true;
+                else if (dx === 1 && pCell.walls[1] === 2) passedDoor = true;
+                else if (dz === 1 && pCell.walls[2] === 2) passedDoor = true;
+                else if (dx === -1 && pCell.walls[3] === 2) passedDoor = true;
+            }
+            if (!passedDoor) {
+                const cCell = grid[index(player.i, player.j)];
+                if (cCell) {
+                    if (dz === 1 && cCell.walls[0] === 2) passedDoor = true;
+                    else if (dx === -1 && cCell.walls[1] === 2) passedDoor = true;
+                    else if (dz === -1 && cCell.walls[2] === 2) passedDoor = true;
+                    else if (dx === 1 && cCell.walls[3] === 2) passedDoor = true;
+                }
+            }
+
+            if (passedDoor && sounds.doorOpen) {
+                const s = sounds.doorOpen.cloneNode();
+                s.volume = volumeSettings.sfx * volumeSettings.master * 2.0;
+                s.play().catch(() => { });
+            }
+
             prevPlayer = { i: player.i, j: player.j };
             if (player.i === goal.i && player.j === goal.j) {
                 setTimeout(generateMaze, 500);
@@ -170,10 +225,12 @@ function gameLoop() {
             }
         } else {
             sounds.zombieVoice.volume = 0;
+            sounds.zombieVoice.pause();
         }
     }
 
     drawMaze();
+    syncPhysics(); // Step Rapier and sync dynamic props
     renderer.render(scene, camera);
 }
 
@@ -185,10 +242,57 @@ window.addEventListener('resize', () => {
 });
 
 // Initialization - ensures scripts are loaded
-function initGame() {
+// Rapier is loaded as an ES module and fires 'rapier-ready' when ready.
+function startGame() {
+    // physicsWorld is a global declared in proto_engine.js
+    // Use plain object gravity (same pattern as Dice/index.html)
+    const gravity = { x: 0.0, y: -20.0, z: 0.0 };
+    physicsWorld = new RAPIER.World(gravity);
+
+    // Create a large static floor collider so dynamic props land on it
+    const floorColliderDesc = RAPIER.ColliderDesc.cuboid(500, 0.05, 500)
+        .setTranslation(0.0, -0.05, 0.0)
+        .setRestitution(0.0)
+        .setFriction(0.8);
+    physicsWorld.createCollider(floorColliderDesc);
+
     generateMaze();
     updateHealthHud();
+
+    // Event Listeners for new UI
+    const minimapContainer = document.getElementById('minimap-container');
+    const showMinimapCheck = document.getElementById('show-minimap');
+    showMinimapCheck.addEventListener('change', (e) => {
+        minimapVisible = e.target.checked;
+        minimapContainer.style.display = minimapVisible ? 'block' : 'none';
+    });
+    // Sync initial state
+    minimapContainer.style.display = minimapVisible ? 'block' : 'none';
+
+    const showFootprintsCheck = document.getElementById('show-footprints');
+    showFootprintsCheck.addEventListener('change', (e) => {
+        footprintsVisible = e.target.checked;
+        if (typeof pathGroup !== 'undefined') pathGroup.visible = footprintsVisible;
+    });
+    // Sync initial state
+    if (typeof pathGroup !== 'undefined') pathGroup.visible = footprintsVisible;
+
+    const footprintColorInput = document.getElementById('footprint-color');
+    footprintColorInput.addEventListener('input', (e) => {
+        footprintColor = e.target.value;
+        if (typeof pathMat !== 'undefined') pathMat.color.set(footprintColor);
+    });
+    // Sync initial state
+    if (typeof pathMat !== 'undefined') pathMat.color.set(footprintColor);
+
     gameLoop();
 }
 
-initGame();
+// Wait for the Rapier ES-module to signal it is ready, then start.
+// If the event fires before this listener is added (unlikely but safe), fall back.
+if (window.RAPIER) {
+    startGame();
+} else {
+    window.addEventListener('rapier-ready', startGame, { once: true });
+}
+
