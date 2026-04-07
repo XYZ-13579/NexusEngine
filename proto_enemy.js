@@ -18,7 +18,7 @@ function loadCreatureModel(path) {
 
     gltfLoader.load(path, (gltf) => {
         enemyModel = gltf.scene;
-        enemyAnimations = gltf.animations;
+        enemyAnimations = gltf.animations; // AnimationClips (not actions)
         enemyModel.traverse((child) => {
             if (child.isMesh || child.isSkinnedMesh) {
                 child.visible = true;
@@ -36,15 +36,17 @@ function loadCreatureModel(path) {
                 }
             }
         });
-        console.log(`Model ${path} loaded successfully.`);
+        console.log(`Model ${path} loaded. Animations: ${enemyAnimations.map(a => a.name).join(', ')}`);
         lastLoadedCreaturePath = path;
         currentLoadingPath = null;
+        setIdleSound('ゾンビの声1.mp3'); // Reset to default idle sound when model changes
         spawnEnemies();
     }, undefined, (error) => {
         console.warn(`GLB ${path} not found, using red cubes`, error);
         enemyModel = null;
         enemyAnimations = [];
         currentLoadingPath = null;
+        setIdleSound('ゾンビの声1.mp3'); // Reset to default idle sound on error
         spawnEnemies();
     });
 }
@@ -57,11 +59,12 @@ document.getElementById('creature-model-input').addEventListener('change', (e) =
 });
 
 class Enemy {
-    constructor(i, j) {
+    constructor(i, j, typeId = 'default') {
         this.i = i;
         this.j = j;
         this.prevI = i;
         this.prevJ = j;
+        this.typeId = typeId;
         this.health = defaultEnemyHealth;
         this.id = Math.random().toString(36).substr(2, 9);
         this.mesh = null;
@@ -70,13 +73,46 @@ class Enemy {
         this.state = 'WANDER';
         this.path = [];
         this.moveProgress = 0;
-        this.speed = (enemyBaseSpeed + Math.random() * 0.5) * w; // Speed in units per second
+        this.speed = (enemyBaseSpeed + Math.random() * 0.5) * w;
         this.attackCooldown = 0;
         this.pathTimer = 0;
         this.radius = w * 0.25 * enemySize;
+        this.stuckTimer = 0;
+        this.lastPos = new THREE.Vector3();
 
-        if (enemyModel) {
-            this.mesh = enemyModel.clone();
+        const config = customCreatureConfigs[typeId];
+
+        if (typeId && typeId.startsWith('cc_') && config) {
+            // Billboard (Plane) for custom image creatures
+            const geometry = new THREE.PlaneGeometry(w * 0.8, w * 0.8);
+            const material = new THREE.MeshStandardMaterial({ 
+                color: 0xffffff, 
+                transparent: true, 
+                side: THREE.DoubleSide,
+                alphaTest: 0.5,
+                emissive: 0x000000 
+            });
+            if (config.img) {
+                new THREE.TextureLoader().load(config.img, (tex) => {
+                    tex.encoding = THREE.sRGBEncoding;
+                    material.map = tex;
+                    material.needsUpdate = true;
+                });
+            }
+            this.mesh = new THREE.Mesh(geometry, material);
+            this.mesh.scale.set(enemySize, enemySize, enemySize);
+            this.mesh.position.set(getPosX(i), w * 0.4 * enemySize, getPosZ(j));
+            this.mesh.userData = { isEnemy: true, enemyId: this.id };
+            
+            // Custom Sounds
+            this.customSounds = {
+                idle: config.idle,
+                hit: config.hit,
+                die: config.die
+            };
+        } else if (enemyModel) {
+            // SkeletonUtils.clone() properly clones SkinnedMesh with its own skeleton
+            this.mesh = THREE.SkeletonUtils.clone(enemyModel);
             this.mesh.visible = true;
             const box = new THREE.Box3().setFromObject(this.mesh);
             const size = box.getSize(new THREE.Vector3());
@@ -91,8 +127,9 @@ class Enemy {
             this.mesh.position.set(getPosX(i), -bottomY, getPosZ(j));
 
             this.mesh.traverse((child) => {
-                if (child.isMesh) {
+                if (child.isMesh || child.isSkinnedMesh) {
                     child.visible = true;
+                    child.frustumCulled = false;
                     if (Array.isArray(child.material)) {
                         child.material = child.material.map(m => {
                             const mat = m.clone();
@@ -107,18 +144,27 @@ class Enemy {
                 }
             });
 
-            if (enemyAnimations.length > 0) {
+            if (enemyAnimations && enemyAnimations.length > 0) {
+                // Create a mixer bound to this clone's root
                 this.mixer = new THREE.AnimationMixer(this.mesh);
                 enemyAnimations.forEach(clip => {
                     const action = this.mixer.clipAction(clip);
                     this.actions[clip.name.toLowerCase()] = action;
                 });
-                const idleActions = ['idle', 'stand', 'wait'];
+                // Try to play an idle/stand animation, fall back to first clip
+                const idleNames = ['idle', 'stand', 'wait'];
                 let played = false;
-                for (let name of idleActions) {
-                    if (this.actions[name]) { this.actions[name].play(); played = true; break; }
+                for (let name of idleNames) {
+                    if (this.actions[name]) {
+                        this.actions[name].play();
+                        played = true;
+                        break;
+                    }
                 }
-                if (!played && enemyAnimations[0]) this.mixer.clipAction(enemyAnimations[0]).play();
+                if (!played) {
+                    const firstKey = Object.keys(this.actions)[0];
+                    if (firstKey) this.actions[firstKey].play();
+                }
             }
         } else {
             const geometry = new THREE.BoxGeometry(w * 0.4, w * 0.7, w * 0.4);
@@ -129,6 +175,14 @@ class Enemy {
             this.mesh.userData = { isEnemy: true, enemyId: this.id };
         }
         scene.add(this.mesh);
+
+        // Set idle sound if custom
+        if (this.customSounds && this.customSounds.idle) {
+            setIdleSound(this.customSounds.idle);
+        } else if (this.typeId === 'default' && !enemyModel) {
+            // For default red cubes, use default idle sound
+            setIdleSound('ゾンビの声1.mp3');
+        }
     }
 
     update(delta) {
@@ -149,14 +203,19 @@ class Enemy {
         if (distToPlayerSq < attackDistSq && this.attackCooldown <= 0) {
             this.state = 'ATTACK';
             this.attackPlayer();
-        } else if (distToPlayerSq < (w * enemySearchRange) * (w * enemySearchRange)) {
+        } else if (envParams.enemyAiMode !== 'idle' && distToPlayerSq < (w * enemySearchRange) * (w * enemySearchRange)) {
             this.state = 'CHASE';
         } else {
-            this.state = 'WANDER';
+            const nextState = envParams.enemyAiMode === 'idle' ? 'IDLE' : 'WANDER';
+            if (nextState === 'IDLE') this.path = [];
+            if (this.state !== nextState) {
+                console.log(`Enemy ${this.id} state changed from ${this.state} to ${nextState}`);
+                this.state = nextState;
+            }
         }
 
-        if (this.state === 'CHASE' || this.state === 'WANDER' || (this.state === 'ATTACK' && this.attackCooldown > 0)) {
-            // Fetch next cell if arrived or no path
+        if (this.state === 'CHASE' || this.state === 'WANDER' || this.state === 'IDLE' || (this.state === 'ATTACK' && this.attackCooldown > 0)) {
+            // Fetch next cell if arrived or no path. 
             if (this.path.length === 0 || this.moveProgress >= 0.95) {
                 if (this.path.length > 0) this.path.shift();
 
@@ -166,7 +225,7 @@ class Enemy {
                         if (this.path.length > 0 && this.path[0].i === this.i && this.path[0].j === this.j) this.path.shift();
                         this.pathTimer = 1.0;
                     }
-                } else {
+                } else if (this.state === 'WANDER') {
                     const currentCell = grid[index(this.i, this.j)];
                     const available = [];
                     if (currentCell) {
@@ -197,6 +256,20 @@ class Enemy {
                 const dz = targetZ - this.mesh.position.z;
                 const distTotal = Math.sqrt(dx * dx + dz * dz);
 
+                // Stuck detection: compare current position with last recorded position
+                const dMoved = this.mesh.position.distanceTo(this.lastPos);
+                if (dMoved < 0.05 * delta * this.speed) {
+                    this.stuckTimer += delta;
+                } else {
+                    this.stuckTimer = 0;
+                }
+
+                // If stuck for too long, skip this node
+                if (this.stuckTimer > 0.8) {
+                    this.moveProgress = 1.0;
+                    this.stuckTimer = 0;
+                }
+
                 if (distTotal > 0.1) {
                     const moveStep = delta * this.speed;
                     const vx = (dx / distTotal) * moveStep;
@@ -209,7 +282,7 @@ class Enemy {
                         this.mesh.position.x = nextX;
                         this.mesh.position.z = nextZ;
                     } else {
-                        // Slide
+                        // Slide logic for walls
                         if (!isColliding(nextX, this.mesh.position.z, this.radius, true)) this.mesh.position.x = nextX;
                         else if (!isColliding(this.mesh.position.x, nextZ, this.radius, true)) this.mesh.position.z = nextZ;
                     }
@@ -228,8 +301,28 @@ class Enemy {
                     this.j = next.j;
                 }
 
-                const lookAtPos = new THREE.Vector3(targetX, this.mesh.position.y, targetZ);
-                this.mesh.lookAt(lookAtPos);
+                this.lastPos.copy(this.mesh.position);
+
+                if (this.typeId && this.typeId.startsWith('cc_')) {
+                    // Billboard: face the camera (Yaw only)
+                    this.mesh.lookAt(camPos.x, this.mesh.position.y, camPos.z);
+                    
+                    // Hide if in front of camera to prevent blocking view
+                    const dir = new THREE.Vector3();
+                    camera.getWorldDirection(dir);
+                    const toCam = new THREE.Vector3().subVectors(camPos, this.mesh.position);
+                    this.mesh.visible = toCam.dot(dir) <= 0;
+                    
+                    // Random idle sound
+                    if (this.customSounds && this.customSounds.idle && Math.random() < 0.005) {
+                        const s = new Audio(this.customSounds.idle);
+                        s.volume = volumeSettings.sfx * volumeSettings.master * 0.5;
+                        s.play().catch(()=>{});
+                    }
+                } else {
+                    const lookAtPos = new THREE.Vector3(targetX, this.mesh.position.y, targetZ);
+                    this.mesh.lookAt(lookAtPos);
+                }
 
                 if (this.mixer) {
                     const walkActions = ['walk', 'run', 'move'];
@@ -249,6 +342,37 @@ class Enemy {
                         if (this.actions[firstAction] && !this.actions[firstAction].isRunning()) {
                             Object.values(this.actions).forEach(a => a.stop());
                             this.actions[firstAction].play();
+                        }
+                    }
+                }
+            } else {
+                // No path - play idle animation
+                if (this.mixer) {
+                    const idleActions = ['idle', 'stand', 'wait'];
+                    let isIdleRunning = false;
+                    for (let name of idleActions) {
+                        if (this.actions[name] && this.actions[name].isRunning()) { isIdleRunning = true; break; }
+                    }
+
+                    // Also check if the default first animation is running
+                    if (!isIdleRunning && enemyAnimations[0]) {
+                        const firstAction = this.mixer.clipAction(enemyAnimations[0]);
+                        if (firstAction.isRunning()) isIdleRunning = true;
+                    }
+                    
+                    if (!isIdleRunning) {
+                        let played = false;
+                        for (let name of idleActions) {
+                            if (this.actions[name]) {
+                                Object.values(this.actions).forEach(a => a.stop());
+                                this.actions[name].play();
+                                played = true;
+                                break;
+                            }
+                        }
+                        if (!played && enemyAnimations[0]) {
+                             Object.values(this.actions).forEach(a => a.stop());
+                             this.mixer.clipAction(enemyAnimations[0]).play();
                         }
                     }
                 }
@@ -289,14 +413,18 @@ class Enemy {
         this.health--;
         this.state = 'CHASE';
         this.pathTimer = 0;
-        if (sounds.creatureDamage) {
+        if (this.customSounds && this.customSounds.hit) {
+            const s = new Audio(this.customSounds.hit);
+            s.volume = volumeSettings.sfx * volumeSettings.master * 1.5;
+            s.play().catch(() => { });
+        } else if (sounds.creatureDamage) {
             const s = sounds.creatureDamage.cloneNode();
             s.volume = volumeSettings.sfx * volumeSettings.master * 1.5;
             s.play().catch(() => { });
         }
         this.mesh.traverse((child) => {
             if (child.isMesh && child.material && child.material.emissive) {
-                if (!child.userData.origEmissive) child.userData.origEmissive = child.material.emissive.getHex();
+                if (child.userData.origEmissive === undefined) child.userData.origEmissive = child.material.emissive.getHex();
                 child.material.emissive.setHex(0xffffff);
             }
         });
@@ -317,10 +445,16 @@ class Enemy {
     }
 
     die(silent = false) {
-        if (!silent && sounds.zombieDeath) {
-            const s = sounds.zombieDeath.cloneNode();
-            s.volume = volumeSettings.sfx * volumeSettings.master * 1.5;
-            s.play().catch(() => { });
+        if (!silent) {
+            if (this.customSounds && this.customSounds.die) {
+                const s = new Audio(this.customSounds.die);
+                s.volume = volumeSettings.sfx * volumeSettings.master * 1.5;
+                s.play().catch(() => { });
+            } else if (sounds.zombieDeath) {
+                const s = sounds.zombieDeath.cloneNode();
+                s.volume = volumeSettings.sfx * volumeSettings.master * 1.5;
+                s.play().catch(() => { });
+            }
         }
         scene.remove(this.mesh);
         this.mesh.traverse((child) => {
@@ -332,6 +466,11 @@ class Enemy {
         });
         const idx = enemies.indexOf(this);
         if (idx > -1) enemies.splice(idx, 1);
+        // If no enemies left, stop idle sound
+        if (enemies.length === 0) {
+            sounds.zombieVoice.pause();
+            sounds.zombieVoice.volume = 0;
+        }
     }
 }
 
@@ -345,8 +484,8 @@ function spawnEnemies() {
     }
 
     if (mapMode === 'custom') {
-        customMapData.creatures.forEach(pos => {
-            enemies.push(new Enemy(pos.i, pos.j));
+        customMapData.creatures.forEach(en => {
+            enemies.push(new Enemy(en.i, en.j, en.type || 'default'));
         });
     } else {
         const emptyCells = grid.filter(c => {
